@@ -16,6 +16,7 @@ Requer:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -28,8 +29,107 @@ LABEL_READY = "kanbots:ready"
 LABEL_IN_PROGRESS = "kanbots:in-progress"
 LABEL_DONE = "kanbots:done"
 WORKSPACE = Path(os.environ.get("KANBOTS_WORKSPACE", Path.home() / "kanbots" / "workspace"))
-POLL_INTERVAL = 60  # segundos entre polls no modo --watch
-CLAUDE_TIMEOUT = 600  # timeout do Claude Code em segundos
+POLL_INTERVAL = 60
+CLAUDE_TIMEOUT = 600
+DEFAULT_MODEL = ""  # vazio = usa default do Claude Code
+
+# Model presets (fallback if config.yaml not found)
+MODEL_PRESETS = {
+    "sonnet": "claude-sonnet-4-20250514",
+    "opus": "claude-opus-4-20250514",
+    "haiku": "claude-3-5-haiku-20241022",
+}
+MODEL_BY_LABEL = {}  # preenchido do config.yaml
+
+def load_config():
+    """Load kanbots/config.yaml if present. Returns dict or {}."""
+    config_paths = [
+        Path(__file__).parent / "config.yaml",
+        Path(os.environ.get("APPDATA", "")) / "kanbots" / "config.yaml",
+    ]
+    for cfg_path in config_paths:
+        if cfg_path.exists():
+            try:
+                import yaml
+                with open(cfg_path) as f:
+                    return yaml.safe_load(f) or {}
+            except ImportError:
+                # Basic YAML parser fallback (sufficient for our simple config)
+                return _parse_simple_yaml(cfg_path)
+    return {}
+
+def _parse_simple_yaml(path: Path) -> dict:
+    """Minimal YAML parser for kanbots config (no PyYAML dependency)."""
+    cfg = {}
+    current_section = cfg
+    sections = {"models": {}, "model_by_label": {}, "repos": {}, "claude": {}, "labels": {}}
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" in stripped and not stripped.startswith(" "):
+            key = stripped.split(":")[0].strip()
+            if key in sections:
+                current_section = sections[key]
+            else:
+                val = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+                cfg[key] = val
+        elif stripped.startswith("- "):
+            pass  # list items, not needed for our config
+        elif ":" in stripped and stripped.startswith(" "):
+            k, v = stripped.split(":", 1)
+            k, v = k.strip().strip('"').strip("'"), v.strip().strip('"').strip("'")
+            current_section[k] = v
+    cfg.update(sections)
+    return cfg
+
+# Load config
+_config = load_config()
+if _config:
+    BRIDGE_REPO = _config.get("bridge_repo", BRIDGE_REPO)
+    labels_cfg = _config.get("labels", {})
+    LABEL_READY = labels_cfg.get("ready", LABEL_READY)
+    LABEL_IN_PROGRESS = labels_cfg.get("in_progress", LABEL_IN_PROGRESS)
+    LABEL_DONE = labels_cfg.get("done", LABEL_DONE)
+    ws = _config.get("workspace", "")
+    if ws:
+        WORKSPACE = Path(ws)
+    POLL_INTERVAL = int(_config.get("poll_interval", POLL_INTERVAL))
+    claude_cfg = _config.get("claude", {})
+    CLAUDE_TIMEOUT = int(claude_cfg.get("timeout", CLAUDE_TIMEOUT))
+    DEFAULT_MODEL = claude_cfg.get("default_model", DEFAULT_MODEL)
+    MODEL_PRESETS.update(_config.get("models", {}))
+    MODEL_BY_LABEL.update(_config.get("model_by_label", {}))
+
+
+def parse_model(issue_body: str, labels: list[str] | None = None) -> str:
+    """
+    Determine which model to use for an issue.
+    Priority: 1) Explicit `model: xxx` in body  2) Model by label  3) Default
+    """
+    # 1. Explicit model in issue body: model: sonnet  or  model: claude-opus-4-...
+    m = re.search(r'(?i)^model:\s*(\S+)', issue_body, re.MULTILINE)
+    if m:
+        model_key = m.group(1).strip()
+        # Check if it's a preset name (sonnet, haiku, opus) or full model ID
+        if model_key in MODEL_PRESETS:
+            return MODEL_PRESETS[model_key]
+        # Assume it's a full model ID
+        if "/" in model_key or model_key.startswith("claude-"):
+            return model_key
+        # Fallback: treat as preset key
+        return MODEL_PRESETS.get(model_key, model_key)
+
+    # 2. Model by label (first matching label wins)
+    if labels:
+        for label in labels:
+            lbl = label.lower().replace("kanbots:", "").replace("claude:", "")
+            if lbl in MODEL_BY_LABEL:
+                preset = MODEL_BY_LABEL[lbl]
+                return MODEL_PRESETS.get(preset, preset)
+
+    # 3. Default
+    return DEFAULT_MODEL
 
 
 # ── GitHub helpers ────────────────────────────────────────────────────
@@ -51,11 +151,11 @@ def gh_json(*args: str):
 
 
 def get_ready_issues() -> list[dict]:
-    """Get open issues with kanbots:ready label."""
+    """Get open issues with kanbots:ready label (includes labels for model detection)."""
     return gh_json(
         "issue", "list", "--repo", BRIDGE_REPO,
         "--label", LABEL_READY, "--state", "open",
-        "--json", "number,title,body", "--limit", "5",
+        "--json", "number,title,body,labels", "--limit", "5",
     ) or []
 
 
@@ -235,7 +335,7 @@ def find_claude() -> str | None:
     return None
 
 
-def run_claude(repo_dir: Path, branch: str, task: str) -> bool:
+def run_claude(repo_dir: Path, branch: str, task: str, model: str = "") -> bool:
     """
     Run Claude Code on a task in the given repo.
     Creates a new branch, writes the prompt, invokes Claude.
@@ -252,19 +352,24 @@ def run_claude(repo_dir: Path, branch: str, task: str) -> bool:
         return False
     print(f"  [claude] Encontrado: {claude_exe}")
 
+    # Build model flag
+    model_flag = f'--model "{model}"' if model else ""
+    if model:
+        print(f"  [claude] Modelo: {model}")
+
     # Start from main and let Claude do its own branching
     subprocess.run(["git", "checkout", "main"], capture_output=True)
     subprocess.run(["git", "pull", "origin", "main"], capture_output=True)
 
-    # Write prompt file (Claude can read it, or we pass via stdin)
+    # Write prompt file
     prompt_file = repo_dir / ".kanbots-prompt.md"
     prompt_file.write_text(task, encoding="utf-8")
 
     # Build command using prompt file via stdin
     if sys.platform == "win32":
-        cmd = f'type "{prompt_file}" | "{claude_exe}" --print --dangerously-skip-permissions -p -'
+        cmd = f'type "{prompt_file}" | "{claude_exe}" --print --dangerously-skip-permissions {model_flag} -p -'
     else:
-        cmd = f'"{claude_exe}" --print --dangerously-skip-permissions -p "$(cat {prompt_file})"'
+        cmd = f'"{claude_exe}" --print --dangerously-skip-permissions {model_flag} -p "$(cat {prompt_file})"'
 
     # Run Claude Code
     print(f"  [claude] Executando tarefa ({CLAUDE_TIMEOUT}s timeout)...")
@@ -296,9 +401,18 @@ def process_issue(issue: dict):
     number = issue["number"]
     title = issue["title"]
     body = issue.get("body", "")
+    issue_labels = [l["name"] for l in issue.get("labels", [])]
     print(f"\n{'='*60}")
     print(f"  KanBots — Issue #{number}: {title}")
+    print(f"  Labels: {issue_labels}")
     print(f"{'='*60}")
+
+    # Determine model for this card
+    model = parse_model(body, issue_labels)
+    if model:
+        print(f"  Modelo selecionado: {model}")
+    else:
+        print(f"  Modelo: default do Claude Code")
 
     # 1. Announce start
     comment_issue(number, "**KanBots:** Iniciando execucao...")
@@ -327,7 +441,7 @@ def process_issue(issue: dict):
 
     # 5. Execute with Claude Code
     task_prompt = f"## Tarefa\n{body}\n\n## Instrucoes\n- Crie uma branch com nome descritivo\n- Siga o AGENTS.md do repositorio\n- Commits em portugues\n- Rode os testes antes de finalizar\n- Ao final, crie um PR contra main"
-    claude_ok = run_claude(repo_dir, fallback_branch, task_prompt)
+    claude_ok = run_claude(repo_dir, fallback_branch, task_prompt, model)
 
     if not claude_ok:
         comment_issue(number, "**KanBots:** ERRO — Claude Code falhou ou timeout. Verifique `.kanbots-output.txt` no workspace.")

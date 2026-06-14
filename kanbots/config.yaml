@@ -1,27 +1,49 @@
+# ═══════════════════════════════════════════════════════════════
 # Kanbots Configuration
-# Copie para %APPDATA%/kanbots/config.yaml ou mantenha junto do monitor.py
+# ═══════════════════════════════════════════════════════════════
+# Local: kanbots/config.yaml (junto do monitor.py)
+# Ou:   %APPDATA%/kanbots/config.yaml
 
-# Repositório bridge que o Kanbots monitora
+# ── Bridge ────────────────────────────────────────────────────
 bridge_repo: claudio0507/kanbots-bridge
 
-# Labels do ciclo de vida
+# ── Labels do ciclo de vida ───────────────────────────────────
 labels:
   ready: kanbots:ready
   in_progress: kanbots:in-progress
   done: kanbots:done
 
-# Workspace onde os repositórios dos projetos são clonados
+# ── Workspace ─────────────────────────────────────────────────
 workspace: C:/Users/Claudio/kanbots/workspace
 
-# Polling
+# ── Polling ───────────────────────────────────────────────────
 poll_interval: 60  # segundos entre verificações
 
-# Claude Code
+# ── Claude Code ───────────────────────────────────────────────
 claude:
-  timeout: 600  # segundos max por tarefa
-  model: claude-sonnet-4-20250514  # ou deixe vazio para default
+  timeout: 600          # segundos max por tarefa
+  default_model: ""     # vazio = default do Claude Code
 
-# Repos conhecidos (atalhos para não precisar do URL completo na issue)
+# ── Modelos disponíveis ───────────────────────────────────────
+models:
+  sonnet:  claude-sonnet-4-20250514
+  opus:    claude-opus-4-20250514
+  haiku:   claude-3-5-haiku-20241022
+
+# ── Modelo automático por label ───────────────────────────────
+# Se a issue NÃO especificar modelo no corpo,
+# usa esta tabela baseada nas labels da issue.
+model_by_label:
+  bug:          haiku      # bugs simples → modelo rápido
+  fix:          haiku
+  test:         haiku      # tarefas de teste → barato
+  feature:      sonnet     # features → modelo平衡
+  feat:         sonnet
+  docs:         haiku
+  refactor:     sonnet
+
+# ── Repos conhecidos ──────────────────────────────────────────
 repos:
   ansvorc: claudio0507/ansvorc
-  # adicione outros projetos aqui conforme necessário
+  # adicione outros projetos:
+  # placaapp: claudio0507/placaapp

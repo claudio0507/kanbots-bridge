@@ -38,43 +38,82 @@ Edite `bridge/kanbots/config.yaml` se seu usuário ou caminhos forem diferentes.
 cd C:\Users\Claudio\kanbots\bridge
 python kanbots/monitor.py --once
 ```
-Deve responder "Nenhuma issue com kanbots:ready" (se não houver issues pendentes).
+
+## Criando Cards (Issues)
+
+Cada "card" é uma issue no `kanbots-bridge`. Use o template ou crie manualmente.
+
+### Template rápido
+```markdown
+## Objetivo
+Adicionar endpoint de busca por nome
+
+## Contexto
+- **Projeto:** claudio0507/ansvorc
+- **Modelo:** sonnet
+
+## Critérios de Aceite
+- [ ] GET /api/v1/clientes?nome=xxx funciona
+- [ ] Testes passam
+```
+
+### Campo `modelo:` — como funciona
+
+O Kanbots decide qual modelo usar por ordem de prioridade:
+
+| Prioridade | Fonte | Exemplo |
+|-----------|-------|---------|
+| **1** | Campo explícito na issue | `model: sonnet` no corpo |
+| **2** | Label da issue | issue com label `bug` → usa haiku |
+| **3** | Default do config.yaml | `claude.default_model` |
+
+**Presets disponíveis** (definidos em `kanbots/config.yaml`):
+- `haiku` → claude-3-5-haiku (rápido, barato — bugs, docs, testes)
+- `sonnet` → claude-sonnet-4 (平衡 — features, refactors)
+- `opus` → claude-opus-4 (máxima qualidade — tarefas complexas)
+
+**Exemplo de card com modelo explícito:**
+```markdown
+## Objetivo
+Refatorar o módulo de cálculo BDI
+
+## Contexto
+- **Projeto:** claudio0507/ansvorc
+- **Modelo:** opus
+```
+
+### Mapeamento automático por label
+
+Se a issue NÃO tiver `model:`, o Kanbots olha as labels:
+
+| Label da issue | Modelo usado |
+|---------------|-------------|
+| `bug` | haiku |
+| `test` | haiku |
+| `docs` | haiku |
+| `feature` | sonnet |
+| `refactor` | sonnet |
+
+Editável no `config.yaml` → `model_by_label`.
 
 ## Uso
 
-### Modo single-run (recomendado para teste)
+### Modo single-run
 ```powershell
 python kanbots/monitor.py --once
 ```
-Processa 1 issue com `kanbots:ready` e sai.
 
 ### Modo watch (contínuo)
 ```powershell
 python kanbots/monitor.py --watch
 ```
-Fica rodando em loop, verificando a cada 60s. Use Ctrl+C para parar.
 
-### Como serviço do Windows (opcional)
-Para rodar em background após reboot:
+### Como serviço do Windows
 ```powershell
-# Usando NSSM (Non-Sucking Service Manager)
 winget install nssm
 nssm install Kanbots "C:\Program Files\Python312\python.exe" "C:\Users\Claudio\kanbots\bridge\kanbots\monitor.py --watch"
 nssm set Kanbots AppDirectory "C:\Users\Claudio\kanbots\bridge"
 nssm start Kanbots
-```
-
-## Como funciona
-
-```
-1. Kanbots monitora viaxis-bridge por issues com label kanbots:ready
-2. Encontrou → aplica kanbots:in-progress
-3. Lê a issue → extrai repositório alvo (ex: claudio0507/ansvorc)
-4. Clona/atualiza o repo no workspace
-5. Cria branch feat/issue-N-descricao
-6. Invoca Claude Code com a tarefa
-7. Commit + push + abre PR
-8. Aplica kanbots:done + comenta resultado na issue
 ```
 
 ## Labels do ciclo
@@ -101,23 +140,9 @@ npm install -g @anthropic-ai/claude-code
 claude login
 ```
 
-### Permission denied ao clonar
-Verifique se o token do gh tem acesso aos repositórios:
-```powershell
-gh auth status
-gh auth refresh -h github.com -s repo
-```
-
-### Workspace não encontrado
-Defina manualmente:
-```powershell
-$env:KANBOTS_WORKSPACE = "C:\Users\Claudio\kanbots\workspace"
-python kanbots/monitor.py --once
-```
-
 ### Claude Code timeout
-Aumente o timeout em `kanbots/config.yaml`:
 ```yaml
+# kanbots/config.yaml
 claude:
   timeout: 1200  # 20 minutos
 ```
