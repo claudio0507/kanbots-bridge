@@ -1,0 +1,27 @@
+# Kanbots Configuration
+# Copie para %APPDATA%/kanbots/config.yaml ou mantenha junto do monitor.py
+
+# Repositório bridge que o Kanbots monitora
+bridge_repo: claudio0507/kanbots-bridge
+
+# Labels do ciclo de vida
+labels:
+  ready: kanbots:ready
+  in_progress: kanbots:in-progress
+  done: kanbots:done
+
+# Workspace onde os repositórios dos projetos são clonados
+workspace: C:/Users/Claudio/kanbots/workspace
+
+# Polling
+poll_interval: 60  # segundos entre verificações
+
+# Claude Code
+claude:
+  timeout: 600  # segundos max por tarefa
+  model: claude-sonnet-4-20250514  # ou deixe vazio para default
+
+# Repos conhecidos (atalhos para não precisar do URL completo na issue)
+repos:
+  ansvorc: claudio0507/ansvorc
+  # adicione outros projetos aqui conforme necessário
