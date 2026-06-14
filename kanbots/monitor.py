@@ -123,6 +123,35 @@ def ensure_repo(repo_full: str) -> Path | None:
 
 
 # ── Claude Code executor ──────────────────────────────────────────────
+def find_claude() -> str | None:
+    """Find Claude CLI executable. Returns full path or None."""
+    import shutil
+
+    # 1. Check PATH
+    found = shutil.which("claude")
+    if found:
+        return found
+
+    # 2. Check common npm global paths (Windows)
+    if sys.platform == "win32":
+        npm_paths = [
+            Path(os.environ.get("APPDATA", "")) / "npm" / "claude.cmd",
+            Path.home() / "AppData" / "Roaming" / "npm" / "claude.cmd",
+            Path.home() / "AppData" / "Local" / "npm" / "claude.cmd",
+            Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "nodejs" / "claude.cmd",
+        ]
+        for p in npm_paths:
+            if p.exists():
+                return str(p)
+
+    # 3. Try npx as fallback
+    npx = shutil.which("npx")
+    if npx:
+        return npx  # Will use "npx claude" syntax
+
+    return None
+
+
 def run_claude(repo_dir: Path, branch: str, task: str) -> bool:
     """
     Run Claude Code on a task in the given repo.
@@ -130,6 +159,15 @@ def run_claude(repo_dir: Path, branch: str, task: str) -> bool:
     Returns True if changes were committed.
     """
     os.chdir(str(repo_dir))
+
+    # Find Claude executable
+    claude_exe = find_claude()
+    if not claude_exe:
+        print("  [ERRO] Claude CLI nao encontrado.")
+        print("  Verifique: npm install -g @anthropic-ai/claude-code")
+        print("  Ou execute: onde claude  (no PowerShell)")
+        return False
+    print(f"  [claude] Encontrado: {claude_exe}")
 
     # Create branch
     subprocess.run(["git", "checkout", "main"], capture_output=True)
@@ -140,15 +178,22 @@ def run_claude(repo_dir: Path, branch: str, task: str) -> bool:
     prompt_file = repo_dir / ".kanbots-prompt.md"
     prompt_file.write_text(task, encoding="utf-8")
 
+    # Build command using prompt file (avoids shell escaping issues on Windows)
+    if sys.platform == "win32":
+        # Windows: type file | claude -p -
+        cmd = f'type "{prompt_file}" | "{claude_exe}" --print --dangerously-skip-permissions -p -'
+    else:
+        cmd = f'"{claude_exe}" --print --dangerously-skip-permissions -p "$(cat {prompt_file})"'
+
     # Run Claude Code
     print(f"  [claude] Executando tarefa ({CLAUDE_TIMEOUT}s timeout)...")
     try:
         result = subprocess.run(
-            ["claude", "--print", "--dangerously-skip-permissions",
-             "-p", task],
+            cmd,
             capture_output=True, text=True,
             timeout=CLAUDE_TIMEOUT,
             cwd=str(repo_dir),
+            shell=True,
         )
         output = result.stdout + result.stderr
         print(f"  [claude] Exit: {result.returncode}")
@@ -165,10 +210,7 @@ def run_claude(repo_dir: Path, branch: str, task: str) -> bool:
         return bool(status.stdout.strip())
 
     except subprocess.TimeoutExpired:
-        print(f"  [claude] TIMEOUT após {CLAUDE_TIMEOUT}s")
-        return False
-    except FileNotFoundError:
-        print("  [ERRO] Claude CLI não encontrado. Instale: npm i -g @anthropic-ai/claude-code")
+        print(f"  [claude] TIMEOUT apos {CLAUDE_TIMEOUT}s")
         return False
 
 
@@ -240,14 +282,14 @@ def process_issue(issue: dict):
         return
 
     # 6. Commit and push
-    pushed = commit_and_push(repo_dir, branch, f"{title}\n\nCloses viaxis-bridge#{number}")
+    pushed = commit_and_push(repo_dir, branch, f"{title}\n\nCloses kanbots-bridge#{number}")
     if not pushed:
         comment_issue(number, "**KanBots:** AVISO — sem mudancas para commitar ou push falhou.")
         edit_labels(number, add=LABEL_DONE, remove=LABEL_IN_PROGRESS)
         return
 
     # 7. Create PR
-    pr_body = f"## O que foi feito\nExecutado por KanBots a partir da issue viaxis-bridge#{number}.\n\nCloses viaxis-bridge#{number}"
+    pr_body = f"## O que foi feito\nExecutado por KanBots a partir da issue kanbots-bridge#{number}.\n\nCloses kanbots-bridge#{number}"
     pr_url = create_pr(repo_dir, branch, title, pr_body)
     if pr_url:
         comment_issue(number, f"**KanBots:** Tarefa concluida.\n\n- **PR:** {pr_url}\n- **Branch:** {branch}\n- **Repo:** {target_repo}\n\nCriterios de aceite verificados. Aguardando revisao do Hermes.")
